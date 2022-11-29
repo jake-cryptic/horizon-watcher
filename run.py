@@ -72,10 +72,10 @@ while True:
     thresh = cv2.threshold(frameDelta, 5, 255,
                            cv2.THRESH_BINARY)[1]
     thresh = cv2.dilate(thresh, None, iterations=2)
-    (_, cnts) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    (contours, hierarchy) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     # loop over the contours
-    for c in cnts:
+    for c in contours:
         # if the contour is too small, ignore it
         if cv2.contourArea(c) < 500:
             continue
