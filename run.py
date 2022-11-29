@@ -1,113 +1,161 @@
 #!/usr/bin/python
-# Python program to implement 
-# Webcam Motion Detector
+import warnings
+import datetime
+import imutils
+import json
+import numpy as np
+import os
+import time
+import cv2
 
-# importing OpenCV, time and Pandas library
-import cv2, time, pandas
-# importing datetime class from datetime library
-from datetime import datetime
+print("[INFO] Kicking off script - " +
+      datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S"))
 
-# Assigning our static_back to None
-static_back = None
+# filter warnings
+warnings.filterwarnings("ignore")
 
-# List when any moving object appear
-motion_list = [ None, None ]
+# initialize the camera and grab a reference to the raw camera capture
+camera = cv2.VideoCapture(0)
+time.sleep(0.25)
 
-# Time of movement
-time = []
+# allow the camera to warmup, then initialize the average frame, last
+# uploaded timestamp, and frame motion counter
+print("[INFO] warming up...")
+time.sleep(5)
+avg = None
+lastUploaded = datetime.datetime.now()
+motion_counter = 0
+non_motion_timer = 36
+fourcc = 0x00000020  # a little hacky, but works for now
+writer = None
+(h, w) = (None, None)
+zeros = None
+output = None
+made_recording = False
 
-# Initializing DataFrame, one column is start 
-# time and other column is end time
-df = pandas.DataFrame(columns = ["Start", "End"])
-
-# Capturing video
-video = cv2.VideoCapture(0)
-
-# Infinite while loop to treat stack of image as video
+# capture frames from the camera
 while True:
-	# Reading frame(image) from video
-	check, frame = video.read()
+    # grab the raw NumPy array representing the image and initialize
+    # the timestamp and occupied/unoccupied text
+    (grabbed, frame) = camera.read()
 
-	# Initializing motion = 0(no motion)
-	motion = 0
+    timestamp = datetime.datetime.now()
+    motion_detected = False
 
-	# Converting color image to gray_scale image
-	gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # if the frame could not be grabbed, then we have reached the end
+    # of the video
+    if not grabbed:
+        print("[INFO] Frame couldn't be grabbed. Breaking - " +
+              datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S"))
+        break
 
-	# Converting gray scale image to GaussianBlur 
-	# so that change can be find easily
-	gray = cv2.GaussianBlur(gray, (21, 21), 0)
+    # resize the frame, convert it to grayscale, and blur it
+    frame = imutils.resize(frame, width=500)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
-	# In first iteration we assign the value 
-	# of static_back to our first frame
-	if static_back is None:
-		static_back = gray
-		continue
+    # if the average frame is None, initialize it
+    if avg is None:
+        print("[INFO] starting background model...")
+        avg = gray.copy().astype("float")
+        # frame.truncate(0)
+        continue
 
-	# Difference between static background 
-	# and current frame(which is GaussianBlur)
-	diff_frame = cv2.absdiff(static_back, gray)
+    # accumulate the weighted average between the current frame and
+    # previous frames, then compute the difference between the current
+    # frame and running average
+    cv2.accumulateWeighted(gray, avg, 0.5)
+    frameDelta = cv2.absdiff(gray, cv2.convertScaleAbs(avg))
 
-	# If change in between static background and
-	# current frame is greater than 30 it will show white color(255)
-	thresh_frame = cv2.threshold(diff_frame, 30, 255, cv2.THRESH_BINARY)[1]
-	thresh_frame = cv2.dilate(thresh_frame, None, iterations = 2)
+    # threshold the delta image, dilate the thresholded image to fill
+    # in holes, then find contours on thresholded image
+    thresh = cv2.threshold(frameDelta, 5, 255,
+                           cv2.THRESH_BINARY)[1]
+    thresh = cv2.dilate(thresh, None, iterations=2)
+    (_, cnts, _) = cv2.findContours(thresh.copy(),
+                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-	# Finding contour of moving object
-	cnts,_ = cv2.findContours(thresh_frame.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # loop over the contours
+    for c in cnts:
+        # if the contour is too small, ignore it
+        if cv2.contourArea(c) < 500:
+            continue
 
-	for contour in cnts:
-		if cv2.contourArea(contour) < 10000:
-			continue
-		motion = 1
+        # compute the bounding box for the contour, draw it on the frame,
+        # and update the text
+        (x, y, w1, h1) = cv2.boundingRect(c)
+        cv2.rectangle(frame, (x, y), (x + w1, y + h1), (0, 255, 0), 2)
+        motion_detected = True
 
-		(x, y, w, h) = cv2.boundingRect(contour)
-		# making green rectangle around the moving object
-		cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+    fps = int(round(camera.get(cv2.CAP_PROP_FPS)))
+    record_fps = 10
+    ts = timestamp.strftime("%Y-%m-%d_%H_%M_%S")
+    time_and_fps = ts + " - fps: " + str(fps)
 
-	# Appending status of motion
-	motion_list.append(motion)
+    # draw the text and timestamp on the frame
+    cv2.putText(frame, "Motion Detected: {}".format(motion_detected), (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    cv2.putText(frame, time_and_fps, (10, frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35, (0, 0, 255), 1)
 
-	motion_list = motion_list[-2:]
+    # Check if writer is None
+    filename = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+    if writer is None:
+        file_path = (f"/home/user/capture/{filename}.mp4")
 
-	# Appending Start time of motion
-	if motion_list[-1] == 1 and motion_list[-2] == 0:
-		time.append(datetime.now())
+        (h2, w2) = frame.shape[:2]
+        writer = cv2.VideoWriter(file_path, fourcc, record_fps, (w2, h2), True)
+        zeros = np.zeros((h2, w2), dtype="uint8")
 
-	# Appending End time of motion
-	if motion_list[-1] == 0 and motion_list[-2] == 1:
-		time.append(datetime.now())
+    def record_video():
+        # construct the final output frame, storing the original frame
+        output = np.zeros((h2, w2, 3), dtype="uint8")
+        output[0:h2, 0:w2] = frame
 
-	# Displaying image in gray_scale
-	cv2.imshow("Gray Frame", gray)
+        # write the output frame to file
+        writer.write(output)
+        # print("[DEBUG] Recording....")
 
-	# Displaying the difference in currentframe to
-	# the staticframe(very first_frame)
-	cv2.imshow("Difference Frame", diff_frame)
+    if motion_detected:
 
-	# Displaying the black and white image in which if
-	# intensity difference greater than 30 it will appear white
-	cv2.imshow("Threshold Frame", thresh_frame)
+        # increment the motion counter
+        motion_counter += 1
 
-	# Displaying color frame with contour of motion of object
-	cv2.imshow("Color Frame", frame)
+        # check to see if the number of frames with motion is high enough
+        if motion_counter >= 12:
+            # create image TODO: make path configurable
+            image_path = (f"/home/user/capture/{filename}.jpg")
+            cv2.imwrite(image_path, frame)
 
-	key = cv2.waitKey(1)
-	# if q entered whole process will stop
-	if key == ord('q'):
-		# if something is movingthen it append the end time of movement
-		if motion == 1:
-			time.append(datetime.now())
-		break
+            record_video()
 
-# Appending time of motion in DataFrame
-for i in range(0, len(time), 2):
-	df = df.append({"Start":time[i], "End":time[i + 1]}, ignore_index = True)
+            made_recording = True
+            non_motion_timer = 36
 
-# Creating a CSV file in which time of movements will be saved
-df.to_csv("Time_of_movements.csv")
+    # If there is no motion, continue recording until timer reaches 0
+    # Else clean everything up
+    else:  # TODO: implement a max recording time
+        # print("[DEBUG] no motion")
+        if made_recording is True and non_motion_timer > 0:
+            non_motion_timer -= 1
+            # print("[DEBUG] first else and timer: " + str(non_motion_timer))
+            record_video()
+        else:
+            # print("[DEBUG] hit else")
+            motion_counter = 0
+            if writer is not None:
+                # print("[DEBUG] hit if 1")
+                writer.release()
+                writer = None
+            if made_recording is False:
+                # print("[DEBUG] hit if 2")
+                os.remove(file_path)
+            made_recording = False
+            non_motion_timer = 36
 
-video.release()
 
-# Destroying all the windows
+# cleanup the camera and close any open windows
+print("[INFO] cleaning up...")
+camera.release()
 cv2.destroyAllWindows()
