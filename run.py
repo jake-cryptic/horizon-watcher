@@ -149,7 +149,8 @@ while True:
                 writer = None
             if made_recording is False:
                 # print("[DEBUG] hit if 2")
-                os.remove(file_path)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
             made_recording = False
             non_motion_timer = 36
 
