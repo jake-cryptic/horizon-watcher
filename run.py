@@ -1,3 +1,4 @@
+#!/usr/bin/python
 # Python program to implement 
 # Webcam Motion Detector
 
